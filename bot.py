@@ -251,7 +251,13 @@ async def cmd_idea(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "💡 *Feature Idea*\n\nWhat would make FleetIQ better for you?",
         parse_mode="Markdown"
     )
-
+async def cmd_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    session = get_session(update.effective_user.id)
+    session["mode"] = "feedback"
+    await update.message.reply_text(
+        "💬 *General Feedback*\n\nShare any thoughts, comments, or suggestions about FleetIQ:",
+        parse_mode="Markdown"
+    )
 
 async def cmd_rate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     keyboard = [[
