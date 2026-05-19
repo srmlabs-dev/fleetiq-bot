@@ -93,8 +93,11 @@ async def ask_claude(messages: list, system: str = SYSTEM_PROMPT) -> str:
                 }
             )
             data = resp.json()
+            log.info(f"Claude response: {data}")
             if "content" in data and data["content"]:
                 return data["content"][0]["text"]
+            if "error" in data:
+                log.error(f"Claude API error response: {data['error']}")
             return "Sorry, I couldn't process that. Please try again."
     except Exception as e:
         log.error(f"Claude API error: {e}")
