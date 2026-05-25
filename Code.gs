@@ -1,10 +1,10 @@
 /**
  * ═══════════════════════════════════════════════════════════════
- *  FleetIQ Google Apps Script  —  Backend Sync
+ *  CrewBIQ Google Apps Script  —  Backend Sync
  *  Версия: 2.0
  *  Обслуживает:
- *    • FleetIQ v7.2  (fleet manager)  — полный дамп данных
- *    • FleetIQ Driver App             — рейсы и PTI отчёты
+ *    • CrewBIQ v7.2  (fleet manager)  — полный дамп данных
+ *    • CrewBIQ Driver App             — рейсы и PTI отчёты
  * ═══════════════════════════════════════════════════════════════
  *
  *  УСТАНОВКА:
