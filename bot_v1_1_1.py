@@ -258,47 +258,58 @@ async def post_event_to_orchestrator(payload: dict) -> dict:
                 )
                 return {"ok": True, "status_code": resp.status_code, "attempts": attempt}
 
-            error_text = redact_secrets(resp.text[:300])
+            response_text = redact_secrets(resp.text[:300])
             if attempt < max_attempts:
                 log.warning(
-                    "event=orchestrator_forward_retry record_id=%s attempt=%s status_code=%s backoff_seconds=%s body=%s",
+                    "event=orchestrator_forward_retry record_id=%s attempt=%s status_code=%s backoff_seconds=%s response_text=%s exception_class=%s exception_message=%s",
                     record_id,
                     attempt,
                     resp.status_code,
                     backoff_seconds,
-                    error_text,
+                    response_text,
+                    "",
+                    "",
                 )
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds *= 2
                 continue
 
             log.error(
-                "event=orchestrator_forward_final_failure record_id=%s attempts=%s status_code=%s body=%s",
+                "event=orchestrator_forward_final_failure record_id=%s attempt=%s status_code=%s response_text=%s exception_class=%s exception_message=%s",
                 record_id,
                 attempt,
                 resp.status_code,
-                error_text,
+                response_text,
+                "",
+                "",
             )
             return {"ok": False, "status_code": resp.status_code, "attempts": attempt}
         except Exception as e:
-            error_text = redact_secrets(str(e))
+            exception_class = type(e).__name__
+            exception_message = redact_secrets(str(e))
             if attempt < max_attempts:
                 log.warning(
-                    "event=orchestrator_forward_retry record_id=%s attempt=%s backoff_seconds=%s error=%s",
+                    "event=orchestrator_forward_retry record_id=%s attempt=%s status_code=%s backoff_seconds=%s response_text=%s exception_class=%s exception_message=%s",
                     record_id,
                     attempt,
+                    "",
                     backoff_seconds,
-                    error_text,
+                    "",
+                    exception_class,
+                    exception_message,
                 )
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds *= 2
                 continue
 
             log.error(
-                "event=orchestrator_forward_final_failure record_id=%s attempts=%s error=%s",
+                "event=orchestrator_forward_final_failure record_id=%s attempt=%s status_code=%s response_text=%s exception_class=%s exception_message=%s",
                 record_id,
                 attempt,
-                error_text,
+                "",
+                "",
+                exception_class,
+                exception_message,
             )
             return {"ok": False, "error": "orchestrator_forward_error", "attempts": attempt}
 
