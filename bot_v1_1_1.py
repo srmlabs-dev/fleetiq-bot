@@ -34,6 +34,7 @@ from telegram.ext import (
 BOT_TOKEN      = os.environ.get("BOT_TOKEN", "")
 ANTHROPIC_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
 SHEETS_URL     = os.environ.get("SHEETS_URL", "")
+ORCHESTRATOR_URL = os.environ.get("ORCHESTRATOR_URL", "")
 APP_SYNC_URL   = os.environ.get("APP_SYNC_URL", "")  # CrewBIQ Driver App_Sync Web App URL
 SHEETS_SECRET  = os.environ.get("COMMUNITY_API_SECRET", "")
 OWNER_ID       = int(os.environ.get("OWNER_ID", "7563117271"))
@@ -190,6 +191,78 @@ def command_text(ctx: ContextTypes.DEFAULT_TYPE) -> str:
     return " ".join(ctx.args).strip() if ctx.args else ""
 
 
+def orchestrator_source(update: Update) -> str:
+    return "telegram_group" if is_group_chat(update) else "telegram_bot"
+
+
+def build_orchestrator_event(
+    update: Update,
+    event: str,
+    text: str = "",
+    module: str = "",
+    priority_hint: str = "",
+    payload: Optional[dict] = None,
+) -> dict:
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.effective_message
+    timestamp = now_iso()
+    message_id = str(getattr(msg, "message_id", "") or "")
+    chat_id = str(chat.id) if chat else ""
+    telegram_id = str(user.id) if user else ""
+    action = str((payload or {}).get("action") or event).replace(":", "_")
+    record_parts = ["bot", action, telegram_id or "unknown", chat_id or "private", message_id or timestamp]
+
+    return {
+        "record_id": "_".join(record_parts),
+        "event": event,
+        "source": orchestrator_source(update),
+        "timestamp": timestamp,
+        "telegram_id": telegram_id,
+        "username": user.username or "" if user else "",
+        "chat_id": chat_id,
+        "chat_type": getattr(chat, "type", "") or "",
+        "text": text or None,
+        "module": module or None,
+        "priority_hint": priority_hint or None,
+        "payload": payload or {},
+    }
+
+
+async def post_event_to_orchestrator(payload: dict) -> dict:
+    """Fire-and-forget Orchestrator forwarding. Never raises into bot flow."""
+    if not ORCHESTRATOR_URL:
+        return {"ok": False, "skipped": True, "reason": "ORCHESTRATOR_URL not configured"}
+
+    url = ORCHESTRATOR_URL.rstrip("/") + "/v1/events"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(url, json=payload)
+        ok = resp.status_code < 400
+        if ok:
+            log.info("[Orchestrator] event forwarded: %s", payload.get("record_id"))
+        else:
+            log.warning(
+                "[Orchestrator] forward failed status=%s record_id=%s body=%s",
+                resp.status_code,
+                payload.get("record_id"),
+                redact_secrets(resp.text[:300]),
+            )
+        return {"ok": ok, "status_code": resp.status_code}
+    except Exception as e:
+        log.warning(
+            "[Orchestrator] forward error record_id=%s: %s",
+            payload.get("record_id"),
+            redact_secrets(str(e)),
+        )
+        return {"ok": False, "error": "orchestrator_forward_error"}
+
+
+def forward_event_to_orchestrator(payload: dict) -> None:
+    if ORCHESTRATOR_URL:
+        asyncio.create_task(post_event_to_orchestrator(payload))
+
+
 # ── GOOGLE SHEETS / APPS SCRIPT BACKEND ───────────────────────────────────────
 
 async def post_to_sheets(payload: dict) -> dict:
@@ -237,6 +310,13 @@ async def save_user_seen(update: Update, source: str = "", entry_point: str = ""
     if extra:
         payload.update(extra)
 
+    forward_event_to_orchestrator(build_orchestrator_event(
+        update,
+        event="user:seen",
+        text=entry_point or payload.get("entry_point", ""),
+        module="community",
+        payload=payload,
+    ))
     asyncio.create_task(post_to_sheets(payload))
 
 
@@ -303,6 +383,28 @@ async def save_structured_feedback(
             "topic": msg_type or "general",
             "message": text,
         }
+
+    event_name = {
+        "bug": "bug:reported",
+        "idea": "idea:submitted",
+        "question": "question:asked",
+        "rating": "feedback:submitted",
+        "feedback": "feedback:submitted",
+        "complaint": "feedback:submitted",
+    }.get(msg_type, "feedback:submitted")
+
+    forward_event_to_orchestrator(build_orchestrator_event(
+        update,
+        event=event_name,
+        text=text,
+        module=classification.get("module", "other"),
+        priority_hint=classification.get("priority", "medium"),
+        payload={
+            **primary,
+            "classification": classification,
+            "bot_response": response[:500],
+        },
+    ))
 
     result = await post_to_sheets(primary)
 
@@ -531,14 +633,26 @@ async def send_invite(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     # MVP: record link generation. Later use dedicated ReferralEngine stages.
-    await post_to_sheets(user_payload(user, {
+    referral_payload = user_payload(user, {
         "action": "score_add",
         "points": 1,
         "score_action": "invite_link_generated",
         "reason": "Generated invite driver link",
         "context_id": code,
         "source": get_chat_context(update).get("source", ""),
-    }))
+    })
+    forward_event_to_orchestrator(build_orchestrator_event(
+        update,
+        event="referral:activity",
+        text="invite_link_generated",
+        module="referral",
+        priority_hint="low",
+        payload={
+            **referral_payload,
+            "invite_link": invite_link,
+        },
+    ))
+    await post_to_sheets(referral_payload)
 
     if update.callback_query:
         await update.callback_query.edit_message_text(
@@ -664,6 +778,19 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             extra["invited_by"] = str(inviter_id)
             extra["ref_code"] = ref_code
             await save_user_seen(update, source=source, entry_point="referral_start", extra=extra)
+            forward_event_to_orchestrator(build_orchestrator_event(
+                update,
+                event="referral:activity",
+                text="referral_start",
+                module="referral",
+                priority_hint="low",
+                payload={
+                    **user_payload(user, extra),
+                    "action": "referral_start",
+                    "entry_point": "referral_start",
+                    **get_chat_context(update),
+                },
+            ))
 
             await update.message.reply_text(
                 "👋 Welcome to CrewBIQ!\n\n"
@@ -1011,14 +1138,22 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
 
         session["language"] = lang
-        await post_to_sheets(user_payload(user, {
+        language_payload = user_payload(user, {
             "action": "user_seen",
             "language": lang,
             "language_source": "user_selected",
             "language_confirmed": True,
             "source": "telegram_private",
             "entry_point": "language_selected",
-        }))
+        })
+        forward_event_to_orchestrator(build_orchestrator_event(
+            update,
+            event="user:seen",
+            text="language_selected",
+            module="community",
+            payload=language_payload,
+        ))
+        await post_to_sheets(language_payload)
 
         await query.edit_message_text(
             f"✅ Language saved: {SUPPORTED_LANGS[lang]}\n\n"
