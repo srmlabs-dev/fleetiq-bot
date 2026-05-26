@@ -38,6 +38,7 @@ BOT_TOKEN      = os.environ.get("BOT_TOKEN", "")
 ANTHROPIC_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
 SHEETS_URL     = os.environ.get("SHEETS_URL", "")
 ORCHESTRATOR_URL = os.environ.get("ORCHESTRATOR_URL", "")
+ORCHESTRATOR_SECRET = os.environ.get("CREWBIQ_ORCHESTRATOR_SECRET", "")
 APP_SYNC_URL   = os.environ.get("APP_SYNC_URL", "")  # CrewBIQ Driver App_Sync Web App URL
 SHEETS_SECRET  = os.environ.get("COMMUNITY_API_SECRET", "")
 OWNER_ID       = int(os.environ.get("OWNER_ID", "7563117271"))
@@ -114,7 +115,7 @@ def redact_secrets(text: str) -> str:
     if text is None:
         return ""
     safe = str(text)
-    for secret in (BOT_TOKEN, ANTHROPIC_KEY, SHEETS_SECRET):
+    for secret in (BOT_TOKEN, ANTHROPIC_KEY, SHEETS_SECRET, ORCHESTRATOR_SECRET):
         if secret:
             safe = safe.replace(secret, "[REDACTED]")
     return safe
@@ -241,11 +242,12 @@ async def post_event_to_orchestrator(payload: dict) -> dict:
     record_id = payload.get("record_id")
     max_attempts = 3
     backoff_seconds = 1.0
+    headers = {"X-CrewBIQ-Secret": ORCHESTRATOR_SECRET} if ORCHESTRATOR_SECRET else None
 
     for attempt in range(1, max_attempts + 1):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(url, json=payload)
+                resp = await client.post(url, json=payload, headers=headers)
 
             if resp.status_code < 400:
                 log.info(
