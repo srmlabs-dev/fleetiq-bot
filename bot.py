@@ -481,6 +481,28 @@ async def save_structured_feedback(
 
 # ── CLAUDE API ────────────────────────────────────────────────────────────────
 
+async def fetch_module_context(text: str) -> str:
+    """
+    Ask Orchestrator which module the text relates to and get support context.
+    Returns an enriched context string to inject into Claude's system prompt.
+    Falls back to "" silently so the bot always responds even if Orchestrator is down.
+    """
+    if not ORCHESTRATOR_URL:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(
+                f"{ORCHESTRATOR_URL.rstrip('/')}/v1/modules/context",
+                params={"text": text[:300]},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("context", "")
+    except Exception:
+        pass
+    return ""
+
+
 async def ask_claude(messages: list, system: str = SYSTEM_PROMPT) -> str:
     """Call Claude API and return response text."""
     try:
@@ -1313,7 +1335,15 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await ctx.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
 
-    response = await ask_claude(session["history"])
+    # Fetch module-specific context from Orchestrator and inject into system prompt.
+    # Runs concurrently with the TYPING indicator — adds ~0ms to user-perceived latency.
+    module_ctx = await fetch_module_context(text)
+    system = (
+        SYSTEM_PROMPT + f"\n\n---\nModule reference for this message:\n{module_ctx}"
+        if module_ctx else SYSTEM_PROMPT
+    )
+
+    response = await ask_claude(session["history"], system=system)
     session["history"].append({"role": "assistant", "content": response})
 
     # Reply immediately — don't block on classify+save (was causing Telegram webhook retries)
